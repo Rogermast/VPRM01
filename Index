@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>VPRM01 - GPS Fotos → Excel + KMZ (Local)</title>
+
+  <!-- Mapa GRATIS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+
+  <style>
+    :root{
+      --bg:#0b1220;
+      --card:#111a2e;
+      --text:#e9eefc;
+      --muted:#aab6d8;
+      --line:#1c2a4a;
+      --btn:#2a3e78;
+      --btn2:#3853a6;
+      --ok:#1f7a55;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      background:linear-gradient(180deg, #08101f, #0b1220);
+      color:var(--text);
+    }
+    .wrap{max-width:1100px;margin:0 auto;padding:28px 16px 40px;}
+    .card{
+      background:rgba(17,26,46,.9);
+      border:1px solid var(--line);
+      border-radius:16px;
+      padding:18px;
+      box-shadow:0 10px 25px rgba(0,0,0,.25);
+    }
+    h1{margin:0 0 6px;font-size:22px}
+    h2{margin:0 0 10px;font-size:18px}
+    .muted{color:var(--muted); margin:8px 0 0; line-height:1.4}
+    .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:14px;}
+    label{display:block;margin-top:8px;margin-bottom:6px;color:var(--muted);font-size:13px}
+    input{
+      width:100%;
+      padding:10px 12px;
+      border-radius:12px;
+      border:1px solid var(--line);
+      background:#0c1426;
+      color:var(--text);
+      outline:none;
+    }
+    button{
+      margin-top:10px;
+      width:100%;
+      padding:10px 12px;
+      border-radius:12px;
+      border:1px solid var(--line);
+      background:var(--btn);
+      color:var(--text);
+      font-weight:600;
+      cursor:pointer;
+    }
+    button:hover{background:var(--btn2)}
+    button.primary{background:var(--ok);}
+    button.primary:hover{filter:brightness(1.1)}
+    .actions{display:flex;gap:10px;margin-top:12px;}
+    .linkbtn{
+      display:inline-block;flex:1;text-align:center;
+      padding:10px 12px;border-radius:12px;
+      border:1px solid var(--line);
+      background:#0c1426;color:var(--text);text-decoration:none;font-weight:600;
+    }
+    .linkbtn:hover{background:#132042}
+    .stats{
+      margin-top:10px;padding:10px 12px;border-radius:12px;
+      border:1px solid var(--line);background:#0c1426;color:var(--text);line-height:1.6;
+    }
+    .mapCard{margin-top:14px;}
+    #map{
+      width:100%;
+      height:420px;
+      border-radius:14px;
+      border:1px solid var(--line);
+      margin-top:10px;
+    }
+    .foot{margin-top:14px;text-align:center;font-size:13px;}
+    .row{display:flex;gap:10px;align-items:center}
+    .pill{
+      display:inline-block;
+      padding:3px 10px;
+      border:1px solid var(--line);
+      border-radius:999px;
+      background:#0c1426;
+      color:var(--muted);
+      font-size:12px;
+    }
+    @media(max-width:980px){.grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="card">
+      <h1>VPRM01 - GPS Fotos → Excel + KMZ (Local)</h1>
+      <p class="muted">Mapa gratuito: Leaflet + OpenStreetMap. Todo en un solo <b>index.html</b>, sin backend.</p>
+      <div class="row" style="margin-top:10px">
+        <span class="pill">EXIF GPS (JPG)</span>
+        <span class="pill">Excel .xlsx</span>
+        <span class="pill">KMZ (Google Earth)</span>
+        <span class="pill">Offline (excepto librerías CDN)</span>
+      </div>
+    </header>
+
+    <main class="grid">
+      <section class="card">
+        <h2>1) Proyecto</h2>
+        <label>Nombre del proyecto</label>
+        <input id="projectName" value="VPRM01" />
+        <p class="muted">Se usa para nombrar los archivos exportados.</p>
+      </section>
+
+      <section class="card">
+        <h2>2) Cargar ZIP</h2>
+        <p class="muted">Sube un <b>.zip</b> con fotos originales (lo ideal: JPG de Google Photos/Takeout).</p>
+        <input id="zipFile" type="file" accept=".zip" />
+        <button id="btnScan">Analizar ZIP</button>
+        <p class="muted" id="scanInfo"></p>
+      </section>
+
+      <section class="card">
+        <h2>3) Exportar</h2>
+        <button id="btnExport" class="primary" disabled>Generar Excel + KMZ</button>
+
+        <div class="stats" id="stats" hidden>
+          <div><b>Total imágenes detectadas:</b> <span id="stTotal">-</span></div>
+          <div><b>Imágenes con GPS:</b> <span id="stGPS">-</span></div>
+        </div>
+
+        <div class="actions" id="downloads" hidden>
+          <a id="dlExcel" class="linkbtn" href="#" download>Descargar Excel</a>
+          <a id="dlKMZ" class="linkbtn" href="#" download>Descargar KMZ</a>
+        </div>
+
+        <p class="muted" id="exportInfo"></p>
+      </section>
+    </main>
+
+    <section class="card mapCard">
+      <h2>Mapa (Gratis - OpenStreetMap)</h2>
+      <p class="muted">Se pintan los puntos GPS extraídos del EXIF.</p>
+      <div id="map"></div>
+      <div class="muted" id="mapInfo"></div>
+    </section>
+
+    <footer class="muted foot">
+      Si las fotos vienen de WhatsApp/Instagram, puede que no traigan coordenadas (metadatos eliminados).
+    </footer>
+  </div>
+
+  <!-- Librerías (gratis) -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/exifreader@4.26.2/dist/exif-reader.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    // --------- MAPA Leaflet + OSM (gratis) ----------
+    const map = L.map("map").setView([3.4516, -76.5320], 12); // Cali por defecto
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: "&copy; OpenStreetMap"
+    }).addTo(map);
+
+    let markersLayer = L.layerGroup().addTo(map);
+
+    function paintPoints(points) {
+      markersLayer.clearLayers();
+      const valid = points.filter(p => typeof p.lat === "number" && typeof p.lon === "number");
+      if (!valid.length) {
+        $("mapInfo").textContent = "No hay puntos GPS para mostrar.";
+        return;
+      }
+      const bounds = [];
+      valid.forEach(p => {
+        const m = L.marker([p.lat, p.lon]).addTo(markersLayer);
+        const title = escapeHtml(p.file || "Foto");
+        const dt = escapeHtml(p.datetime || "");
+        m.bindPopup(`<b>${title}</b><br/>${dt}<br/>${p.lat}, ${p.lon}`);
+        bounds.push([p.lat, p.lon]);
+      });
+      map.fitBounds(bounds, { padding: [20, 20] });
+      $("mapInfo").textContent = `Mostrando ${valid.length} puntos GPS en el mapa.`;
+    }
+
+    function escapeHtml(s) {
+      return (s ?? "").toString()
+        .replaceAll("&","&amp;")
+        .replaceAll("<","&lt;")
+        .replaceAll(">","&gt;")
+        .replaceAll('"',"&quot;")
+        .replaceAll("'","&#039;");
+    }
+
+    // --------- EXIF GPS helpers ----------
+    function dmsToDecimal(dms, ref) {
+      if (!dms || dms.length !== 3) return null;
+      const deg = dms[0], min = dms[1], sec = dms[2];
+      const dd = deg + (min / 60) + (sec / 3600);
+      if (ref === "S" || ref === "W") return -dd;
+      return dd;
+    }
+
+    function getProjectName() {
+      const v = $("projectName").value.trim();
+      return v || "VPRM01";
+    }
+
+    // Estado global
+    let analyzedRows = [];  // [{file, datetime, lat, lon, alt, make, model, hasGps}]
+    let zipFileName = "";
+
+    // --------- Analizar ZIP ----------
+    $("btnScan").addEventListener("click", async () => {
+      try {
+        const file = $("zipFile").files[0];
+        if (!file) throw new Error("Selecciona un archivo .zip con fotos.");
+
+        $("scanInfo").textContent = "Leyendo ZIP...";
+        $("exportInfo").textContent = "";
+        $("downloads").hidden = true;
+        $("stats").hidden = true;
+        $("btnExport").disabled = true;
+        analyzedRows = [];
+        zipFileName = file.name;
+
+        const zip = await JSZip.loadAsync(file);
+
+        // Filtrar imágenes
+        const entries = [];
+        zip.forEach((path, entry) => {
+          const lower = path.toLowerCase();
+          if (entry.dir) return;
+          if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) entries.push(entry);
+          // PNG rara vez trae EXIF: si quieres, habilítalo; por defecto lo omitimos para evitar confusión
+        });
+
+        if (!entries.length) throw new Error("El ZIP no contiene .jpg/.jpeg.");
+
+        $("scanInfo").textContent = `Encontradas ${entries.length} imágenes. Analizando EXIF... (puede tardar)`;
+
+        let gpsCount = 0;
+
+        // Analizar una por una
+        for (let i = 0; i < entries.length; i++) {
+          const entry = entries[i];
+          // Leer bytes
+          const arrayBuffer = await entry.async("arraybuffer");
+
+          let row = {
+            file: entry.name.split("/").pop(),
+            relPath: entry.name,
+            datetime: "",
+            lat: null,
+            lon: null,
+            alt: null,
+            make: "",
+            model: "",
+            hasGps: false
+          };
+
+          try {
+            const tags = await ExifReader.load(arrayBuffer, { expanded: true });
+
+            // DateTimeOriginal (si no, DateTime)
+            const dto = tags?.exif?.DateTimeOriginal?.description || tags?.exif?.DateTime?.description;
+            if (dto) row.datetime = dto;
+
+            // Make/Model
+            const make = tags?.exif?.Make?.description;
+            const model = tags?.exif?.Model?.description;
+            if (make) row.make = make;
+            if (model) row.model = model;
+
+            // GPS
+            // ExifReader suele entregar gps.Latitude / gps.Longitude en decimal en algunos casos,
+            // pero también puede traer DMS. Cubrimos ambos.
+            const gpsLat = tags?.gps?.Latitude;
+            const gpsLon = tags?.gps?.Longitude;
+            const gpsAlt = tags?.gps?.Altitude?.value ?? tags?.gps?.Altitude?.description;
+
+            // Caso decimal directo:
+            if (gpsLat?.value && gpsLon?.value && typeof gpsLat.value === "number" && typeof gpsLon.value === "number") {
+              row.lat = gpsLat.value;
+              row.lon = gpsLon.value;
+              row.hasGps = true;
+            } else {
+              // Caso DMS:
+              const latDMS = tags?.gps?.GPSLatitude?.value;
+              const latRef = tags?.gps?.GPSLatitudeRef?.description;
+              const lonDMS = tags?.gps?.GPSLongitude?.value;
+              const lonRef = tags?.gps?.GPSLongitudeRef?.description;
+              if (Array.isArray(latDMS) && Array.isArray(lonDMS) && latRef && lonRef) {
+                const lat = dmsToDecimal(latDMS, latRef);
+                const lon = dmsToDecimal(lonDMS, lonRef);
+                if (typeof lat === "number" && typeof lon === "number") {
+                  row.lat = lat;
+                  row.lon = lon;
+                  row.hasGps = true;
+                }
+              }
+            }
+
+            if (gpsAlt != null) {
+              // si viene como "123 m", lo intentamos parsear
+              if (typeof gpsAlt === "number") row.alt = gpsAlt;
+              else {
+                const m = (""+gpsAlt).match(/-?\d+(\.\d+)?/);
+                if (m) row.alt = parseFloat(m[0]);
+              }
+            }
+
+            if (row.hasGps) gpsCount++;
+
+          } catch (e) {
+            // Si una foto falla, la dejamos sin EXIF
+          }
+
+          analyzedRows.push(row);
+
+          // feedback ligero
+          if ((i+1) % 25 === 0 || i === entries.length - 1) {
+            $("scanInfo").textContent = `Analizadas ${i+1}/${entries.length} | Con GPS: ${gpsCount}`;
+            await new Promise(r => setTimeout(r, 0));
+          }
+        }
+
+        $("scanInfo").textContent = `Listo ✅ Analizadas: ${analyzedRows.length} | Con GPS: ${gpsCount}`;
+        $("stTotal").textContent = analyzedRows.length;
+        $("stGPS").textContent = gpsCount;
+        $("stats").hidden = false;
+
+        // pintar mapa
+        paintPoints(analyzedRows.filter(r => r.hasGps).map(r => ({
+          file: r.file, datetime: r.datetime, lat: r.lat, lon: r.lon
+        })));
+
+        $("btnExport").disabled = false;
+
+      } catch (e) {
+        $("scanInfo").textContent = "⚠ " + e.message;
+      }
+    });
+
+    // --------- Exportar Excel + KMZ ----------
+    $("btnExport").addEventListener("click", async () => {
+      try {
+        if (!analyzedRows.length) throw new Error("Primero analiza un ZIP.");
+
+        const project = getProjectName();
+        $("exportInfo").textContent = "Generando Excel + KMZ...";
+
+        // ---- Excel (SheetJS) ----
+        const header = [
+          "Archivo","RutaRelativa","FechaHora","Latitud","Longitud","Altitud","Marca","Modelo","LinkGoogleMaps","TieneGPS"
+        ];
+
+        const data = [header];
+
+        analyzedRows.forEach(r => {
+          const link = (r.lat != null && r.lon != null)
+            ? `https://www.google.com/maps?q=${r.lat},${r.lon}`
+            : "";
+          data.push([
+            r.file,
+            r.relPath,
+            r.datetime || "",
+            (r.lat ?? ""),
+            (r.lon ?? ""),
+            (r.alt ?? ""),
+            r.make || "",
+            r.model || "",
+            link,
+            r.hasGps ? "SI" : "NO"
+          ]);
+        });
+
+        const wb = XLSX.utils.book_new();
+        const ws = XLSX.utils.aoa_to_sheet(data);
+
+        // Ajuste básico de anchos
+        ws["!cols"] = header.map(h => ({ wch: Math.min(Math.max(h.length + 2, 14), 35) }));
+
+        XLSX.utils.book_append_sheet(wb, ws, "Coordenadas");
+        const xlsxArray = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+        const xlsxBlob = new Blob([xlsxArray], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+
+        // ---- KML + KMZ (JSZip) ----
+        const placemarks = analyzedRows
+          .filter(r => r.hasGps && typeof r.lat === "number" && typeof r.lon === "number")
+          .map(r => {
+            const name = escapeHtml(r.file);
+            const desc = escapeHtml(
+              `FechaHora: ${r.datetime || ""}\n` +
+              `Marca/Modelo: ${(r.make || "")} ${(r.model || "")}\n` +
+              `Altitud: ${r.alt ?? ""}\n` +
+              `Ruta: ${r.relPath}`
+            );
+            const alt = (typeof r.alt === "number") ? r.alt : 0;
+            return `
+              <Placemark>
+                <name>${name}</name>
+                <description><![CDATA[${desc}]]></description>
+                <Point><coordinates>${r.lon},${r.lat},${alt}</coordinates></Point>
+              </Placemark>
+            `;
+          }).join("\n");
+
+        const kml = `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>${escapeHtml(project)}</name>
+    ${placemarks}
+  </Document>
+</kml>`;
+
+        const kmz = new JSZip();
+        kmz.file("doc.kml", kml);
+        const kmzBlob = await kmz.generateAsync({ type: "blob" });
+
+        // ---- Entregar descargas ----
+        const excelUrl = URL.createObjectURL(xlsxBlob);
+        const kmzUrl = URL.createObjectURL(kmzBlob);
+
+        $("dlExcel").href = excelUrl;
+        $("dlExcel").download = `${project}_coordenadas.xlsx`;
+
+        $("dlKMZ").href = kmzUrl;
+        $("dlKMZ").download = `${project}_mapa.kmz`;
+
+        $("downloads").hidden = false;
+        $("exportInfo").textContent = "Listo ✅ Excel + KMZ generados. Descárgalos arriba.";
+
+      } catch (e) {
+        $("exportInfo").textContent = "⚠ " + e.message;
+      }
+    });
+  </script>
+</body>
+</html>
