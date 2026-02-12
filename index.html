@@ -220,136 +220,184 @@
     let zipFileName = "";
 
     // --------- Analizar ZIP ----------
-    $("btnScan").addEventListener("click", async () => {
+   // --------- Analizar ZIP (MEJORADO: EXIF + Google Takeout JSON) ----------
+$("btnScan").addEventListener("click", async () => {
+  try {
+    const file = $("zipFile").files[0];
+    if (!file) throw new Error("Selecciona un archivo .zip con fotos.");
+
+    $("scanInfo").textContent = "Leyendo ZIP...";
+    $("exportInfo").textContent = "";
+    $("downloads").hidden = true;
+    $("stats").hidden = true;
+    $("btnExport").disabled = true;
+    analyzedRows = [];
+    zipFileName = file.name;
+
+    const zip = await JSZip.loadAsync(file);
+
+    // 1) Cargar TODOS los JSON del ZIP en un diccionario
+    //    Claves probables en Takeout: "IMG_1.JPG.json", "IMG_1.json" (varía)
+    const jsonMap = new Map();
+
+    const zipEntries = [];
+    zip.forEach((path, entry) => {
+      if (!entry.dir) zipEntries.push(entry);
+    });
+
+    const jsonEntries = zipEntries.filter(e => e.name.toLowerCase().endsWith(".json"));
+    for (const je of jsonEntries) {
       try {
-        const file = $("zipFile").files[0];
-        if (!file) throw new Error("Selecciona un archivo .zip con fotos.");
+        const txt = await je.async("string");
+        const obj = JSON.parse(txt);
+        jsonMap.set(je.name, obj);
 
-        $("scanInfo").textContent = "Leyendo ZIP...";
-        $("exportInfo").textContent = "";
-        $("downloads").hidden = true;
-        $("stats").hidden = true;
-        $("btnExport").disabled = true;
-        analyzedRows = [];
-        zipFileName = file.name;
+        // También guardamos por “nombre base” para buscar fácil
+        const base = je.name.replace(/\.json$/i, "");
+        jsonMap.set(base, obj);
+      } catch (e) {
+        // ignora json corruptos
+      }
+    }
 
-        const zip = await JSZip.loadAsync(file);
+    // 2) Filtrar imágenes (JPG/JPEG)
+    const imgEntries = zipEntries.filter(e => {
+      const lower = e.name.toLowerCase();
+      return lower.endsWith(".jpg") || lower.endsWith(".jpeg");
+    });
 
-        // Filtrar imágenes
-        const entries = [];
-        zip.forEach((path, entry) => {
-          const lower = path.toLowerCase();
-          if (entry.dir) return;
-          if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) entries.push(entry);
-          // PNG rara vez trae EXIF: si quieres, habilítalo; por defecto lo omitimos para evitar confusión
-        });
+    if (!imgEntries.length) throw new Error("El ZIP no contiene .jpg/.jpeg.");
 
-        if (!entries.length) throw new Error("El ZIP no contiene .jpg/.jpeg.");
+    $("scanInfo").textContent = `Encontradas ${imgEntries.length} imágenes. Analizando EXIF/JSON...`;
 
-        $("scanInfo").textContent = `Encontradas ${entries.length} imágenes. Analizando EXIF... (puede tardar)`;
+    let gpsCount = 0;
 
-        let gpsCount = 0;
+    // helper para intentar sacar GPS desde JSON Takeout
+    function gpsFromTakeoutJson(imagePath, fileNameOnly) {
+      // Posibles nombres JSON:
+      //  - "carpeta/IMG_1.JPG.json"
+      //  - "IMG_1.JPG.json"
+      //  - "carpeta/IMG_1.JPG" (ya guardamos base sin .json)
+      //  - "IMG_1.JPG" (base)
+      const candidates = [
+        imagePath + ".json",
+        fileNameOnly + ".json",
+        imagePath,
+        fileNameOnly
+      ];
 
-        // Analizar una por una
-        for (let i = 0; i < entries.length; i++) {
-          const entry = entries[i];
-          // Leer bytes
-          const arrayBuffer = await entry.async("arraybuffer");
+      for (const k of candidates) {
+        const obj = jsonMap.get(k);
+        if (!obj) continue;
 
-          let row = {
-            file: entry.name.split("/").pop(),
-            relPath: entry.name,
-            datetime: "",
-            lat: null,
-            lon: null,
-            alt: null,
-            make: "",
-            model: "",
-            hasGps: false
-          };
+        // Takeout suele traer geoDataExif y geoData
+        const g1 = obj.geoDataExif || obj.geoData;
+        if (!g1) continue;
 
-          try {
-            const tags = await ExifReader.load(arrayBuffer, { expanded: true });
+        const lat = typeof g1.latitude === "number" ? g1.latitude : null;
+        const lon = typeof g1.longitude === "number" ? g1.longitude : null;
+        const alt = typeof g1.altitude === "number" ? g1.altitude : null;
 
-            // DateTimeOriginal (si no, DateTime)
-            const dto = tags?.exif?.DateTimeOriginal?.description || tags?.exif?.DateTime?.description;
-            if (dto) row.datetime = dto;
+        // OJO: Takeout pone 0,0 cuando no hay ubicación real
+        if (lat === 0 && lon === 0) continue;
 
-            // Make/Model
-            const make = tags?.exif?.Make?.description;
-            const model = tags?.exif?.Model?.description;
-            if (make) row.make = make;
-            if (model) row.model = model;
+        if (typeof lat === "number" && typeof lon === "number") {
+          return { lat, lon, alt };
+        }
+      }
+      return null;
+    }
 
-            // GPS
-            // ExifReader suele entregar gps.Latitude / gps.Longitude en decimal en algunos casos,
-            // pero también puede traer DMS. Cubrimos ambos.
-            const gpsLat = tags?.gps?.Latitude;
-            const gpsLon = tags?.gps?.Longitude;
-            const gpsAlt = tags?.gps?.Altitude?.value ?? tags?.gps?.Altitude?.description;
+    // 3) Analizar una por una
+    for (let i = 0; i < imgEntries.length; i++) {
+      const entry = imgEntries[i];
+      const arrayBuffer = await entry.async("arraybuffer");
 
-            // Caso decimal directo:
-            if (gpsLat?.value && gpsLon?.value && typeof gpsLat.value === "number" && typeof gpsLon.value === "number") {
-              row.lat = gpsLat.value;
-              row.lon = gpsLon.value;
-              row.hasGps = true;
-            } else {
-              // Caso DMS:
-              const latDMS = tags?.gps?.GPSLatitude?.value;
-              const latRef = tags?.gps?.GPSLatitudeRef?.description;
-              const lonDMS = tags?.gps?.GPSLongitude?.value;
-              const lonRef = tags?.gps?.GPSLongitudeRef?.description;
-              if (Array.isArray(latDMS) && Array.isArray(lonDMS) && latRef && lonRef) {
-                const lat = dmsToDecimal(latDMS, latRef);
-                const lon = dmsToDecimal(lonDMS, lonRef);
-                if (typeof lat === "number" && typeof lon === "number") {
-                  row.lat = lat;
-                  row.lon = lon;
-                  row.hasGps = true;
-                }
-              }
-            }
+      const fileOnly = entry.name.split("/").pop();
 
-            if (gpsAlt != null) {
-              // si viene como "123 m", lo intentamos parsear
-              if (typeof gpsAlt === "number") row.alt = gpsAlt;
-              else {
-                const m = (""+gpsAlt).match(/-?\d+(\.\d+)?/);
-                if (m) row.alt = parseFloat(m[0]);
-              }
-            }
+      let row = {
+        file: fileOnly,
+        relPath: entry.name,
+        datetime: "",
+        lat: null,
+        lon: null,
+        alt: null,
+        make: "",
+        model: "",
+        hasGps: false
+      };
 
-            if (row.hasGps) gpsCount++;
+      // A) Intentar EXIF primero
+      try {
+        const tags = await ExifReader.load(arrayBuffer, { expanded: true });
 
-          } catch (e) {
-            // Si una foto falla, la dejamos sin EXIF
-          }
+        const dto = tags?.exif?.DateTimeOriginal?.description || tags?.exif?.DateTime?.description;
+        if (dto) row.datetime = dto;
 
-          analyzedRows.push(row);
+        const make = tags?.exif?.Make?.description;
+        const model = tags?.exif?.Model?.description;
+        if (make) row.make = make;
+        if (model) row.model = model;
 
-          // feedback ligero
-          if ((i+1) % 25 === 0 || i === entries.length - 1) {
-            $("scanInfo").textContent = `Analizadas ${i+1}/${entries.length} | Con GPS: ${gpsCount}`;
-            await new Promise(r => setTimeout(r, 0));
+        // GPS por decimal directo
+        const gpsLat = tags?.gps?.Latitude?.value;
+        const gpsLon = tags?.gps?.Longitude?.value;
+        if (typeof gpsLat === "number" && typeof gpsLon === "number") {
+          row.lat = gpsLat;
+          row.lon = gpsLon;
+          row.hasGps = true;
+        }
+
+        // Altitud si existe
+        const gpsAlt = tags?.gps?.Altitude?.value ?? tags?.gps?.Altitude?.description;
+        if (gpsAlt != null) {
+          if (typeof gpsAlt === "number") row.alt = gpsAlt;
+          else {
+            const m = (""+gpsAlt).match(/-?\d+(\.\d+)?/);
+            if (m) row.alt = parseFloat(m[0]);
           }
         }
 
-        $("scanInfo").textContent = `Listo ✅ Analizadas: ${analyzedRows.length} | Con GPS: ${gpsCount}`;
-        $("stTotal").textContent = analyzedRows.length;
-        $("stGPS").textContent = gpsCount;
-        $("stats").hidden = false;
-
-        // pintar mapa
-        paintPoints(analyzedRows.filter(r => r.hasGps).map(r => ({
-          file: r.file, datetime: r.datetime, lat: r.lat, lon: r.lon
-        })));
-
-        $("btnExport").disabled = false;
-
       } catch (e) {
-        $("scanInfo").textContent = "⚠ " + e.message;
+        // ignore
       }
-    });
+
+      // B) Si EXIF no trae GPS, intentar JSON Takeout
+      if (!row.hasGps) {
+        const g = gpsFromTakeoutJson(row.relPath, row.file);
+        if (g) {
+          row.lat = g.lat;
+          row.lon = g.lon;
+          row.alt = (typeof g.alt === "number") ? g.alt : row.alt;
+          row.hasGps = true;
+        }
+      }
+
+      if (row.hasGps) gpsCount++;
+      analyzedRows.push(row);
+
+      if ((i+1) % 25 === 0 || i === imgEntries.length - 1) {
+        $("scanInfo").textContent = `Analizadas ${i+1}/${imgEntries.length} | Con GPS: ${gpsCount}`;
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+
+    $("scanInfo").textContent = `Listo ✅ Analizadas: ${analyzedRows.length} | Con GPS: ${gpsCount}`;
+    $("stTotal").textContent = analyzedRows.length;
+    $("stGPS").textContent = gpsCount;
+    $("stats").hidden = false;
+
+    paintPoints(analyzedRows.filter(r => r.hasGps).map(r => ({
+      file: r.file, datetime: r.datetime, lat: r.lat, lon: r.lon
+    })));
+
+    $("btnExport").disabled = false;
+
+  } catch (e) {
+    $("scanInfo").textContent = "⚠ " + e.message;
+  }
+});
+
 
     // --------- Exportar Excel + KMZ ----------
     $("btnExport").addEventListener("click", async () => {
