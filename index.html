@@ -36,7 +36,7 @@
   <div class="wrap">
     <header class="card">
       <h1>VPRM01 - GPS Fotos → Excel + KMZ (Local)</h1>
-      <p class="muted">Un solo archivo HTML. Mapa gratis (Leaflet + OSM). Exporta Excel + KMZ. Lector EXIF: <b>exifr</b> (mejor para Motorola/HDR).</p>
+      <p class="muted">Un solo archivo HTML. Mapa gratis (Leaflet + OSM). Exporta Excel + KMZ. Lector EXIF: <b>exifr FULL</b> + <b>exifr.gps()</b>.</p>
     </header>
 
     <main class="grid">
@@ -82,7 +82,7 @@
 
     <section class="card mapCard">
       <h2>Mapa (OpenStreetMap - Gratis)</h2>
-      <p class="muted">Puntos + ruta (línea) + perímetro (convex hull).</p>
+      <p class="muted">Puntos + ruta (línea) + perímetro (convex hull). Se ignoran coordenadas 0,0 y fuera de rango.</p>
       <div id="map"></div>
       <div class="muted" id="mapInfo"></div>
     </section>
@@ -91,7 +91,10 @@
   <!-- Librerías -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/lite.umd.js"></script>
+
+  <!-- IMPORTANTE: FULL (no lite) -->
+  <script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js"></script>
+
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
   <script>
@@ -236,14 +239,12 @@
     // ---------- Estado ----------
     let analyzedRows = [];
     let totalDistance = 0;
-    let routePoints = [];
-    let perimeterPoints = [];
 
     function getProjectName() {
       return ($("projectName").value || "").trim() || "VPRM01";
     }
 
-    // ---------- Analizar ZIP usando EXIFR ----------
+    // ---------- Analizar ZIP usando EXIFR FULL + exifr.gps ----------
     $("btnScan").addEventListener("click", async () => {
       try {
         const file = $("zipFile").files[0];
@@ -257,8 +258,6 @@
 
         analyzedRows = [];
         totalDistance = 0;
-        routePoints = [];
-        perimeterPoints = [];
 
         const zip = await JSZip.loadAsync(file);
         const imgEntries = [];
@@ -270,7 +269,7 @@
 
         let gpsOk = 0, gpsBad = 0;
 
-        $("scanInfo").textContent = `Encontradas ${imgEntries.length} imágenes. Analizando EXIF (exifr)...`;
+        $("scanInfo").textContent = `Encontradas ${imgEntries.length} imágenes. Analizando EXIF (exifr.gps)...`;
 
         for (let i=0;i<imgEntries.length;i++){
           const entry = imgEntries[i];
@@ -289,43 +288,38 @@
             distAccumM: 0
           };
 
-          // exifr parse: devuelve latitude/longitude decimal cuando existe
-          let ex = null;
+          let gps = null;
+          let meta = null;
+
+          // 1) GPS (más confiable)
+          try { gps = await exifr.gps(ab); } catch (e) {}
+
+          // 2) Metadata general
           try {
-            ex = await exifr.parse(ab, {
-              // pedimos GPS + datos básicos
-              gps: true,
-              exif: true,
-              tiff: true,
-              ifd0: true
-            });
+            meta = await exifr.parse(ab, { exif:true, ifd0:true, tiff:true });
           } catch (e) {}
 
-          if (ex) {
-            // Fecha/Hora
-            const dt = ex.DateTimeOriginal || ex.CreateDate || ex.ModifyDate || ex.DateTime;
+          if (meta) {
+            const dt = meta.DateTimeOriginal || meta.CreateDate || meta.ModifyDate || meta.DateTime;
             if (dt instanceof Date) {
-              // Formato parecido al de Windows
               const pad = n => String(n).padStart(2,"0");
               row.datetime = `${dt.getFullYear()}:${pad(dt.getMonth()+1)}:${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
             } else if (dt) {
               row.datetime = String(dt);
             }
+            if (meta.Make) row.make = String(meta.Make);
+            if (meta.Model) row.model = String(meta.Model);
+          }
 
-            // Marca/Modelo
-            if (ex.Make) row.make = String(ex.Make);
-            if (ex.Model) row.model = String(ex.Model);
-
-            // GPS
-            if (typeof ex.latitude === "number" && typeof ex.longitude === "number") {
-              row.lat = ex.latitude;
-              row.lon = ex.longitude;
-              row.alt = (typeof ex.altitude === "number") ? ex.altitude : null;
-            }
+          if (gps && typeof gps.latitude === "number" && typeof gps.longitude === "number") {
+            row.lat = gps.latitude;
+            row.lon = gps.longitude;
+            if (typeof gps.altitude === "number") row.alt = gps.altitude;
           }
 
           if (isValidLatLon(row.lat, row.lon)) { row.gpsValid = true; gpsOk++; }
           else {
+            // si había algo pero inválido
             if (row.lat != null || row.lon != null) gpsBad++;
             row.lat = null; row.lon = null; row.alt = null; row.gpsValid = false;
           }
@@ -344,10 +338,9 @@
         const dupCount = computeDuplicates(gpsRows);
         totalDistance = computeDistancesInOrder(gpsRows);
 
-        routePoints = gpsRows.map(r => ({lat:r.lat, lon:r.lon, file:r.file, datetime:r.datetime, isDuplicate:r.isDuplicate}));
-        perimeterPoints = convexHull(routePoints);
+        const routePoints = gpsRows.map(r => ({lat:r.lat, lon:r.lon, file:r.file, datetime:r.datetime, isDuplicate:r.isDuplicate}));
+        const perimeterPoints = convexHull(routePoints);
 
-        // Pintar mapa
         paintMap(
           gpsRows.map(r => ({lat:r.lat, lon:r.lon, file:r.file, datetime:r.datetime, isDuplicate:r.isDuplicate})),
           routePoints,
